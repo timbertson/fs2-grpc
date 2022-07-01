@@ -8,6 +8,7 @@ import cats.implicits._
 import fs2._
 import io.grpc._
 import minitest._
+import org.lyranthe.fs2_grpc.java_runtime.shared.Readiness
 
 object ServerSuite extends SimpleTestSuite {
 
@@ -105,7 +106,7 @@ object ServerSuite extends SimpleTestSuite {
     val dummy = new DummyServerCall
     val listener = Fs2UnaryServerCallListener[IO].apply[String, Int](dummy, options).unsafeRunSync()
 
-    listener.unsafeStreamResponse(new Metadata(), s => Stream.eval(s).map(_.length).repeat.take(5))
+    listener.unsafeStreamResponse(Readiness.noop, new Metadata(), s => Stream.eval(s).map(_.length).repeat.take(5))
     listener.onMessage("123")
     listener.onHalfClose()
 
@@ -123,9 +124,9 @@ object ServerSuite extends SimpleTestSuite {
     implicit val cs: ContextShift[IO] = IO.contextShift(ec)
 
     val dummy = new DummyServerCall
-    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy).unsafeRunSync()
+    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy, IO.unit).unsafeRunSync()
 
-    listener.unsafeStreamResponse(new Metadata(), _ => Stream.emit(3).repeat.take(5))
+    listener.unsafeStreamResponse(Readiness.noop, new Metadata(), _ => Stream.emit(3).repeat.take(5))
     listener.onHalfClose()
 
     ec.tick()
@@ -142,9 +143,9 @@ object ServerSuite extends SimpleTestSuite {
     implicit val cs: ContextShift[IO] = IO.contextShift(ec)
 
     val dummy = new DummyServerCall
-    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy).unsafeRunSync()
+    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy, IO.unit).unsafeRunSync()
 
-    listener.unsafeStreamResponse(new Metadata(), _ => Stream.emit(3).repeat.take(5))
+    listener.unsafeStreamResponse(Readiness.noop, new Metadata(), _ => Stream.emit(3).repeat.take(5))
 
     listener.onCancel()
 
@@ -165,9 +166,9 @@ object ServerSuite extends SimpleTestSuite {
     implicit val cs: ContextShift[IO] = IO.contextShift(ec)
 
     val dummy = new DummyServerCall
-    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy, options).unsafeRunSync()
+    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy, IO.unit, options).unsafeRunSync()
 
-    listener.unsafeStreamResponse(new Metadata(), _.map(_.length).intersperse(0))
+    listener.unsafeStreamResponse(Readiness.noop, new Metadata(), _.map(_.length).intersperse(0))
     listener.onMessage("a")
     listener.onMessage("ab")
     listener.onHalfClose()
@@ -186,9 +187,10 @@ object ServerSuite extends SimpleTestSuite {
     implicit val cs: ContextShift[IO] = IO.contextShift(ec)
 
     val dummy = new DummyServerCall
-    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy).unsafeRunSync()
+    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy, IO.unit).unsafeRunSync()
 
     listener.unsafeStreamResponse(
+      Readiness.noop,
       new Metadata(),
       _.map(_.length) ++ Stream.emit(0) ++ Stream.raiseError[IO](new RuntimeException("hello"))
     )
@@ -218,7 +220,7 @@ object ServerSuite extends SimpleTestSuite {
       _.compile.foldMonoid.map(_.length)
 
     val dummy = new DummyServerCall
-    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy, options).unsafeRunSync()
+    val listener = Fs2StreamServerCallListener[IO].apply[String, Int](dummy, IO.unit, options).unsafeRunSync()
 
     listener.unsafeUnaryResponse(new Metadata(), implementation)
     listener.onMessage("ab")
