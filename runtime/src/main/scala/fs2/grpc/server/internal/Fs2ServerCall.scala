@@ -23,38 +23,45 @@ package fs2.grpc.server.internal
 
 import cats.effect._
 import cats.effect.std.Dispatcher
+import cats.syntax.all._
 import fs2._
 import fs2.grpc.server.ServerCallOptions
+import fs2.grpc.shared.StreamOutput
 import io.grpc._
 
 private[server] object Fs2ServerCall {
   type Cancel = SyncIO[Unit]
 
-  def setup[I, O](
+  def setup[F[_], I, O](
       options: ServerCallOptions,
-      call: ServerCall[I, O]
-  ): SyncIO[Fs2ServerCall[I, O]] =
-    SyncIO {
-      call.setMessageCompression(options.messageCompression)
-      options.compressor.map(_.name).foreach(call.setCompression)
-      new Fs2ServerCall[I, O](call)
-    }
+      call: ServerCall[I, O],
+      dispatcher: Dispatcher[F]
+  )(implicit F: Async[F]): F[Fs2ServerCall[F, I, O]] =
+      for {
+        _ <- F.delay {
+          call.setMessageCompression(options.messageCompression)
+          options.compressor.map(_.name).foreach(call.setCompression)
+        }
+        streamOutput <- StreamOutput.server(call, dispatcher)
+      } yield new Fs2ServerCall[F, I, O](call, streamOutput, dispatcher)
 }
 
-private[server] final class Fs2ServerCall[Request, Response](
+private[server] final class Fs2ServerCall[F[_], Request, Response](
     call: ServerCall[Request, Response],
+    val streamOutput: StreamOutput[F, Response],
+    dispatcher: Dispatcher[F],
 ) {
 
   import Fs2ServerCall.Cancel
 
-  def stream[F[_]](sendStream: Stream[F, Response] => Stream[F, Unit], response: Stream[F, Response], dispatcher: Dispatcher[F])(implicit F: Sync[F]): SyncIO[Cancel] =
+  def stream(response: Stream[F, Response])(implicit F: Sync[F]): SyncIO[Cancel] =
     run(
       response.pull.peek1
         .flatMap {
           case Some((_, stream)) =>
             Pull.suspend {
               call.sendHeaders(new Metadata())
-              sendStream(stream).pull.echo
+              streamOutput.writeStream(stream).pull.echo
             }
           case None => Pull.done
         }
@@ -72,6 +79,9 @@ private[server] final class Fs2ServerCall[Request, Response](
       },
       dispatcher
     )
+
+  def requestOnPull[F[_]](implicit F: Sync[F]): Pipe[F, Request, Request] =
+    _.chunks.flatMap(chunk => Stream.evalUnChunk(F.as(F.delay(call.request(chunk.size)), chunk)))
 
   def request(n: Int): SyncIO[Unit] =
     SyncIO(call.request(n))

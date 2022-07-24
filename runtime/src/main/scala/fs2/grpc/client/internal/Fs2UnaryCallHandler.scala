@@ -22,10 +22,10 @@
 package fs2.grpc.client.internal
 
 import cats.effect.kernel.{Async, Outcome, Ref}
-import cats.effect.syntax.all._
 import cats.effect.{Sync, SyncIO}
-import cats.syntax.flatMap._
-import cats.syntax.functor._
+import cats.syntax.all._
+import cats.effect.syntax.monadCancel._
+import cats.effect.syntax.spawn._
 import fs2._
 import fs2.grpc.client.ClientOptions
 import fs2.grpc.shared.StreamOutput

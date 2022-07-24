@@ -32,6 +32,7 @@ class DummyServerCall extends ServerCall[String, Int] {
   var currentStatus: Option[Status] = None
   var requested: Int = 0
   var ready: Boolean = true
+  var explicitCompressor: Option[String] = None
 
   override def request(numMessages: Int): Unit = {
     requested += numMessages
@@ -47,6 +48,11 @@ class DummyServerCall extends ServerCall[String, Int] {
   override def close(status: Status, trailers: Metadata): Unit = {
     currentStatus = Some(status)
   }
+
+  override def setCompression(compressor: String): Unit = {
+    explicitCompressor = Some(compressor)
+  }
+
   override def isCancelled: Boolean = false
 
   override def isReady: Boolean = ready
