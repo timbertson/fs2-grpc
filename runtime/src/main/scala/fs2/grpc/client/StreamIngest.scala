@@ -77,3 +77,59 @@ private[grpc] object StreamIngest {
   }
 
 }
+
+sealed trait IngestResult {
+  case object Full
+  case object HasCapacity
+}
+
+private[grpc] trait StreamIngest2[F[_], T] {
+  def onMessage(msg: T): F[Unit]
+  def onClose(error: Option[Throwable]): F[Unit]
+  def messages: Stream[F, T]
+}
+
+private[grpc] object StreamIngest2 {
+
+  def apply[F[_]: Concurrent, T](
+    request: Int => F[Unit],
+    prefetchN: Int
+  ): F[StreamIngest2[F, T]] =
+    Queue
+      .unbounded[F, Either[Option[Throwable], T]]
+      .map(q => create[F, T](request, prefetchN, q))
+
+  def create[F[_], T](
+    request: Int => F[Unit],
+    prefetchN: Int,
+    queue: Queue[F, Either[Option[Throwable], T]]
+  )(implicit F: Concurrent[F]): StreamIngest2[F, T] = new StreamIngest2[F, T] {
+
+    val limit: Int =
+      math.max(1, prefetchN)
+
+    val ensureMessages: F[Unit] =
+      queue.size.flatMap(qs => request(1).whenA(qs < limit))
+
+    def onMessage(msg: T): F[Unit] =
+      queue.offer(msg.asRight) *> ensureMessages
+
+    def onClose(error: Option[Throwable]): F[Unit] =
+      queue.offer(error.asLeft)
+
+    val messages: Stream[F, T] = {
+
+      val run: F[Option[T]] =
+        queue.take.flatMap {
+          case Right(v) => ensureMessages *> v.some.pure[F]
+          case Left(Some(error)) => F.raiseError(error)
+          case Left(None) => none[T].pure[F]
+        }
+
+      Stream.repeatEval(run).unNoneTerminate
+
+    }
+
+  }
+
+}
