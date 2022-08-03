@@ -4,6 +4,7 @@ import cats.effect.std.Dispatcher
 import cats.effect.{Async, Deferred, Ref, SyncIO}
 import cats.syntax.all._
 import fs2.Stream
+import fs2.grpc.internal.{ClientRemoteOutput, RemoteOutput, RemoteProxy}
 import io.grpc.{ClientCall, ServerCall}
 
 private[grpc] trait StreamOutput[F[_], T] {
@@ -61,5 +62,36 @@ private[grpc] class StreamOutputImpl[F[_], T](
           send
       }
     })
+  }
+}
+
+private[grpc] class StreamOutputImpl2[F[_], T](
+  proxy: RemoteProxy[F, RemoteOutput.Message[T]],
+  waiting: Ref[F, Option[Deferred[F, Unit]]],
+)(implicit F: Async[F]) {
+  def onReady: F[Unit] = waiting.getAndSet(None).flatMap {
+    case None => F.unit
+    case Some(wake) => wake.complete(()).void
+  }
+
+  def sendWhenReady(msg: T): F[Unit] = {
+    val send = proxy.send(RemoteOutput.Message(msg))
+    proxy.isReady.ifM(send, {
+      Deferred[F, Unit].flatMap { wakeup =>
+        waiting.set(wakeup.some) *>
+          proxy.isReady.ifM(onReady, F.unit) *> // trigger manually in case onReady was invoked before we installed wakeup
+          wakeup.get *>
+          send
+      }
+    })
+  }
+}
+private [grpc] object StreamOutput2 {
+  def apply[F[_], T](
+    proxy: RemoteProxy[F, RemoteOutput.Message[T]],
+  )(implicit F: Async[F]): F[StreamOutputImpl2[F, T]] = {
+    Ref[F].of(Option.empty[Deferred[F, Unit]]).map { waiting =>
+      new StreamOutputImpl2[F, T](proxy, waiting)
+    }
   }
 }
