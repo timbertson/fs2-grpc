@@ -1,60 +1,53 @@
 package fs2.grpc.internal
 
-import cats.{Monad, MonadError}
-import cats.effect.{Async, Sync, SyncIO, kernel}
-import cats.effect.kernel.{Concurrent, Ref}
-import cats.syntax.all._
-import fs2.grpc.client.StreamIngest
-import fs2.grpc.server.internal.Fs2ServerCall.Cancel
-import fs2.grpc.shared.{StreamOutput, StreamOutputImpl2}
-import io.grpc.{ClientCall, Metadata, Status, StatusRuntimeException}
-
-//  ---- REMOTE INPUT ----
-
-sealed trait ServerRemoteInput[+Request]
-sealed trait ClientRemoteInput[+Response]
+import cats.effect.SyncIO
+import io.grpc.{Metadata, Status}
 
 // ---- REMOTE INPUT ----
 // inputs originating from the remote code (i.e. coming over the wire)
 object RemoteInput {
-  case object Ready extends ServerRemoteInput[Nothing] with ClientRemoteInput[Nothing]
-  case class Message[A](value: A) extends ServerRemoteInput[A] with ClientRemoteInput[A]
-  case object HalfClose extends ServerRemoteInput[Nothing]
-  case object Cancel extends ServerRemoteInput[Nothing]
-  case class Close(status: Status, trailers: Metadata) extends ClientRemoteInput[Nothing]
+  sealed trait Server[+Request]
+  sealed trait Client[+Response]
+
+  case object Ready extends Server[Nothing] with Client[Nothing]
+  case class Message[A](value: A) extends Server[A] with Client[A]
+  case object HalfClose extends Server[Nothing]
+  case object Cancel extends Server[Nothing]
+  case class Close(status: Status, trailers: Metadata) extends Client[Nothing]
+  case object Complete extends Server[Nothing]
 }
 
 
 //  ---- LOCAL INPUT ----
 // inputs originating from the local code (i.e. the application)
 
-sealed trait ServerLocalInput[+Response]
-sealed trait ClientLocalInput[+Request]
-
-// TODO different stream inputs / outputs?
 
 object LocalInput {
-  case class Message[A](value: A) extends ServerLocalInput[A] with ClientLocalInput[A]
-  case class RequestMore(n: Int) extends ServerLocalInput[Nothing] with ClientLocalInput[Nothing]
-  case object HalfClose extends ClientLocalInput[Nothing]
+  sealed trait Server[+Response]
+  sealed trait Client[+Request]
+
+  case class Message[A](value: A) extends Server[A] with Client[A]
+  case class RequestMore(n: Int) extends Server[Nothing] with Client[Nothing]
+  case object HalfClose extends Client[Nothing]
 
   // client can cancel or terminate, server can only terminate
-  case object Cancel extends ClientLocalInput[Nothing]
+  case object Cancel extends Client[Nothing]
 }
 
 
 // ---- REMOTE OUTPUT ----
 // outputs to be sent to the remote side
 
-sealed trait ServerRemoteOutput[+Response]
-sealed trait ClientRemoteOutput[+Request]
 
 object RemoteOutput {
-  case class Message[A](value: A) extends ServerRemoteOutput[A] with ClientRemoteOutput[A]
-  case class RequestMore(n: Int) extends ServerRemoteOutput[Nothing] with ClientRemoteOutput[Nothing]
-  case class Error(status: Status) extends ServerRemoteOutput[Nothing]
-  case object HalfClose extends ClientRemoteOutput[Nothing]
-  case object Cancel extends ClientRemoteOutput[Nothing]
+  sealed trait Server[+Response]
+  sealed trait Client[+Request]
+
+  case class Message[A](value: A) extends Server[A] with Client[A]
+  case class RequestMore(n: Int) extends Server[Nothing] with Client[Nothing]
+  case class Error(status: Status) extends Server[Nothing]
+  case object HalfClose extends Client[Nothing]
+  case object Cancel extends Client[Nothing]
 }
 
 //// ---- LOCAL OUTPUT ----
@@ -70,77 +63,44 @@ object RemoteOutput {
 
 
 // ---- STATE ----
-// TODO how many stream/ unary states do we need?
 
-sealed trait UnaryClientState[F[_], -Response]
-sealed trait StreamClientState[F[_]]
+object CallState {
+  sealed trait ClientUnary[F[_], -Response]
+  sealed trait ClientStream[F[_]]
 
-object CommonState {
-  case class Done[F[_]]() extends UnaryClientState[F, Any] with StreamClientState[F] with UnaryServerState[F, Any, Nothing]
-}
+  sealed trait ServerUnary[F[_], -Request, +Response]
+//  sealed trait ServerStream[F[_]]
 
-object ClientState {
-//  case class Initial[F[_], Response](handler: Either[Status, Response] => F[Unit]) extends UnaryClientState[F, Nothing, Response]
-//  def initialUnary[F[_], Response](implicit F: Async[F]): F[PendingMessage[F, Response]] =
-//    F.async[Response]{ cb =>
-//      Ref[F].of(PendingMessage[F, Response]({
-//        case r: Right[Throwable, Response] => cb(r)
-//        case l: Left[Throwable, Response] => cb(l)
-//      })).map { ref =>
-//        call.start(???, ???)
-//        call.request(1)
-//        call.sendMessage(message)
-//        call.halfClose()
-//        Some(onCancel(call))
-//      }
-//    }
+  case class Done[F[_]]() extends ClientUnary[F, Any] with ClientStream[F] with ServerUnary[F, Any, Nothing]
 
-//  def initialUnary[F[_], Response](cm: F[PendingMessage[F, Response]] =
-//    F.async[Response]{ cb =>
-//      Ref[F].of(PendingMessage[F, Response]({
-//        case r: Right[Throwable, Response] => cb(r)
-//        case l: Left[Throwable, Response] => cb(l)
-//      })).map { ref =>
-//        call.start(???, ???)
-//        call.request(1)
-//        call.sendMessage(message)
-//        call.halfClose()
-//        Some(onCancel(call))
-//      }
-//    }
-  case class PendingMessage[F[_], Response](handler: Either[Throwable, Response] => Unit) extends UnaryClientState[F, Response]
-  case class PendingCloseHandler[F[_], Response](handler: Either[Throwable, Response] => Unit, value: Response) extends UnaryClientState[F, Any]
-  case class PendingClose[F[_]](dummy: F[Unit]) extends StreamClientState[F]
+  case class PendingMessage[F[_], Response](handler: Either[Throwable, Response] => Unit) extends ClientUnary[F, Response]
+  case class PendingCloseHandler[F[_], Response](handler: Either[Throwable, Response] => Unit, value: Response) extends ClientUnary[F, Any]
+  case class PendingClose[F[_]](dummy: F[Unit]) extends ClientStream[F]
 
-  case class Idle[F[_]]() extends StreamClientState[F]
+  case class Idle[F[_]]() extends ClientStream[F]
 //  case class Completed[F[_]](dummy: F[Unit]) extends ClientState[F, Nothing, Any]
-}
 
-sealed trait UnaryServerState[F[_], -Request, +Response]
-sealed trait StreamServerState[F[_]]
-
-object ServerState {
   // TODO these are a bit like the above, but with different accepting arguments. Can they be combined?
-  case class PendingMessage[F[_], Request, Response](handler: Request => F[Response]) extends UnaryServerState[F, Request, Response]
-  case class PendingHalfClose[F[_], Request, Response](handler: Request => F[Response], request: Request) extends UnaryServerState[F, Request, Response]
-  case class Called[F[_]](cancel: Cancel) extends UnaryServerState[F, Any, Nothing]
+  case class PendingMessageServer[F[_], Request, Response](handler: Request => F[Response]) extends ServerUnary[F, Request, Response]
+  case class PendingHalfClose[F[_], Request, Response](handler: Request => F[Response], request: Request) extends ServerUnary[F, Request, Response]
+  case class Called[F[_]](cancel: SyncIO[Unit]) extends ServerUnary[F, Any, Nothing]
 }
 
-trait Processor[F[_], I] {
-  def apply(input: I): F[Unit]
-}
-trait StateProcessor[F[_], S, I] {
-  def apply(state: S, input: I): (S, F[Unit])
-}
-
-case class CompositeState[+Local, +Remote](local: Local, remote: Remote)
-
-class ClientReceiveStream[F[_], Response](
-
-) extends StateProcessor[F, StreamClientState[F], ClientRemoteInput[Response]] {
-  override def apply(state: StreamClientState[F], input: ClientRemoteInput): (StreamClientState[F], F[Unit]) = {
-  }
-}
+//trait Processor[F[_], I] {
+//  def apply(input: I): F[Unit]
+//}
+//trait StateProcessor[F[_], S, I] {
+//  def apply(state: S, input: I): (S, F[Unit])
+//}
+//
+//case class CompositeState[+Local, +Remote](local: Local, remote: Remote)
+//
+//class ClientReceiveStream[F[_], Response](
+//
+//) extends StateProcessor[F, CallState.ClientStream[F], RemoteInput.Client[Response]] {
+//  override def apply(state: CallState.ClientStream[F], input: RemoteInput.Client[Response]): (CallState.ClientStream[F], F[Unit]) = {
+//  }
+//}
 
 // -------
 

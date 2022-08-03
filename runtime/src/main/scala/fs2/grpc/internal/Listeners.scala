@@ -6,50 +6,50 @@ import io.grpc.{ClientCall, Metadata, ServerCall, Status}
 
 
 object Listener {
-  def clientCall[F[_], Response](adaptor: RemoteAdaptor[F, ClientRemoteInput[Response]], dispatcher: Dispatcher[F]): ClientCall.Listener[Response] = {
+  def clientCall[F[_], Response](adaptor: RemoteAdaptor[F, RemoteInput.Client[Response]], dispatcher: Dispatcher[F]): ClientCall.Listener[Response] = {
     new ClientCall.Listener[Response] {
-      private def emit(event: ClientRemoteInput[Response]): Unit = {
+      private def emit(event: RemoteInput.Client[Response]): Unit = {
         dispatcher.unsafeRunSync(adaptor.onRemote(event))
       }
 
       override def onMessage(message: Response): Unit = {
-        emit(CommonRemoteInput.Message(message))
+        emit(RemoteInput.Message(message))
       }
 
       override def onClose(status: Status, trailers: Metadata): Unit = {
-        emit(ClientRemoteInput.Close(status, trailers))
+        emit(RemoteInput.Close(status, trailers))
       }
 
       override def onReady(): Unit = {
-        emit(CommonRemoteInput.Ready)
+        emit(RemoteInput.Ready)
       }
     }
   }
 
-  def serverCall[F[_], Request](adaptor: RemoteAdaptor[F, RemoteInput[Request]], dispatcher: Dispatcher[F]): ClientCall.Listener[Request] = {
+  def serverCall[F[_], Request](adaptor: RemoteAdaptor[F, RemoteInput.Server[Request]], dispatcher: Dispatcher[F]): ClientCall.Listener[Request] = {
     new ServerCall.Listener[Request] {
-      private def emit(event: RemoteInput[Request]): Unit = {
+      private def emit(event: RemoteInput.Server[Request]): Unit = {
         dispatcher.unsafeRunSync(adaptor.onRemote(event))
       }
 
       override def onMessage(message: Request): Unit = {
-        emit(CommonRemoteInput.Message(message))
+        emit(RemoteInput.Message(message))
       }
 
       override def onReady(): Unit = {
-        emit(CommonRemoteInput.Ready)
+        emit(RemoteInput.Ready)
       }
 
-      def onHalfClose(): Unit = {
+      override def onHalfClose(): Unit = {
         emit(RemoteInput.HalfClose)
       }
 
-      def onCancel(): Unit = {
+      override def onCancel(): Unit = {
         emit(RemoteInput.Cancel)
       }
 
-      def onComplete(): Unit = {
-        emit(RemoteInput.Close)
+      override def onComplete(): Unit = {
+        emit(RemoteInput.Complete)
       }
     }
   }

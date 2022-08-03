@@ -12,7 +12,7 @@ import io.grpc._
 final case class UnaryResult[A](value: Option[A], status: Option[GrpcStatus])
 final case class GrpcStatus(status: Status, trailers: Metadata)
 
-class ClientCallRunner[F[_], Request, Response] private[client] (
+class ClientCallRunner[F[_], Request, Response] (
   call: ClientCall[Request, Response],
   dispatcher: Dispatcher[F],
   options: ClientOptions
@@ -22,14 +22,14 @@ class ClientCallRunner[F[_], Request, Response] private[client] (
   def unaryToUnaryCall(message: Request, headers: Metadata): F[Response] = {
     val local = new ClientLocalUnaryAdaptor(proxy)
     F.async[Response] { cb =>
-      Ref[F].of[UnaryClientState[F, Response]](ClientState.PendingMessage(cb)).flatMap { ref =>
+      Ref[F].of[CallState.ClientUnary[F, Response]](CallState.PendingMessage(cb)).flatMap { ref =>
         val remote = new ClientRemoteUnaryAdaptor(ref)
         val listener = Listener.clientCall(remote, dispatcher)
         call.start(listener, headers)
         local.onLocal(LocalInput.RequestMore(1)) *>
           local.onLocal(LocalInput.Message(message)) *>
           local.onLocal(LocalInput.HalfClose) *>
-          F.pure(local.onLocal(LocalInput.Cancel))
+          F.pure(Some(local.onLocal(LocalInput.Cancel)))
       }
     }
   }
@@ -41,7 +41,7 @@ class ClientCallRunner[F[_], Request, Response] private[client] (
     // Is it even a good idea? One is incoming, one outgoing?
     StreamOutput2[F, Request](proxy).flatMap { streamOutput =>
       F.async[Response] { cb =>
-        Ref[F].of[UnaryClientState[F, Response]](ClientState.PendingMessage(cb)).flatMap { ref =>
+        Ref[F].of[CallState.ClientUnary[F, Response]](CallState.PendingMessage(cb)).flatMap { ref =>
           val remote = new ClientRemoteUnaryAdaptor(ref)
           call.start(Listener.clientCall(remote, dispatcher), headers)
 
@@ -79,16 +79,10 @@ class ClientCallRunner[F[_], Request, Response] private[client] (
 
   //
 
-  private def handleExitCase(cancelSucceed: Boolean): (ClientCall.Listener[Response], Resource.ExitCase) => F[Unit] = {
-    case (_, Resource.ExitCase.Succeeded) => cancel("call done".some, None).whenA(cancelSucceed)
-    case (_, Resource.ExitCase.Canceled) => cancel("call was cancelled".some, None)
-    case (_, Resource.ExitCase.Errored(t)) => cancel(t.getMessage.some, t.some)
-  }
-
   private def mkStreamListenerR(
     md: Metadata,
-    remote: RemoteAdaptor[F, ClientRemoteInput[Response]],
-    local: LocalAdaptor[F, ClientLocalInput[Request]]
+    remote: RemoteAdaptor[F, RemoteInput.Client[Response]],
+    local: LocalAdaptor[F, LocalInput.Client[Request]]
   ): Resource[F, ClientCall.Listener[Response]] = {
     val prefetchN = options.prefetchN.max(1)
     val listener = Listener.clientCall[F, Response](remote, dispatcher)
@@ -119,7 +113,5 @@ object ClientCallRunner {
         )
       )
     }
-
   }
-
 }
