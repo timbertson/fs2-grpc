@@ -25,13 +25,14 @@ object RemoteInput {
 object LocalInput {
   sealed trait Server[+Response]
   sealed trait Client[+Request]
+  sealed trait ClientCommon
 
-  case class Message[A](value: A) extends Server[A] with Client[A]
-  case class RequestMore(n: Int) extends Server[Nothing] with Client[Nothing]
+//  case class Message[A](value: A) extends Server[A] with Client[A]
+  case class RequestMore(n: Int) extends Server[Nothing] with Client[Nothing] with ClientCommon
   case object HalfClose extends Client[Nothing]
 
   // client can cancel or terminate, server can only terminate
-  case object Cancel extends Client[Nothing]
+  case object Cancel extends Client[Nothing] with ClientCommon
 }
 
 

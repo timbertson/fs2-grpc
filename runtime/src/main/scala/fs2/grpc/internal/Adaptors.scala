@@ -14,7 +14,7 @@ trait RemoteAdaptor[F[_], R] {
 }
 
 
-
+// TODO I think a local adaptor is the same as proxy, unify them?
 trait LocalAdaptor[F[_], LI] {
   def onLocal(input: LI): F[Unit]
 }
@@ -88,33 +88,46 @@ class ClientRemoteStreamAdaptor[F[_], Request, Response](
   }
 }
 
-class ClientLocalStreamAdaptor[F[_], Request](
-  output: StreamOutputImpl2[F, Request],
-  proxy: RemoteProxy[F, RemoteOutput.Client[Request]],
-  state: Ref[F, CallState.ClientStream[F]],
-)(implicit F: Async[F]) extends LocalAdaptor[F, LocalInput.Client[Request]] {
-  override def onLocal(input: LocalInput.Client[Request]): F[Unit] = {
-    input match {
-      case LocalInput.Message(value) =>
-        state.get.flatMap {
-          case _: CallState.Idle[_] => output.sendWhenReady(value)
-          case _: CallState.Done[_] => F.unit // call terminated, will be reported elsewhere
-        }
-      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
-      case LocalInput.Cancel => proxy.send(RemoteOutput.Cancel)
-    }
-  }
-}
+//class ClientLocalStreamAdaptor[F[_], Request](
+//  output: StreamOutputImpl2[F, Request],
+//  proxy: RemoteProxy[F, RemoteOutput.Client[Request]],
+//  state: Ref[F, CallState.ClientStream[F]],
+//)(implicit F: Async[F]) extends LocalAdaptor[F, LocalInput.Client[Request]] {
+//  override def onLocal(input: LocalInput.Client[Request]): F[Unit] = {
+//    input match {
+//      // TODO I don't think this is ever used!?
+////      case LocalInput.Message(value) =>
+////        state.get.flatMap {
+////          case _: CallState.Idle[_] => output.sendWhenReady(value)
+////          case _: CallState.Done[_] => F.unit // call terminated, will be reported elsewhere
+////        }
+//      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
+//      case LocalInput.Cancel => proxy.send(RemoteOutput.Cancel)
+//    }
+//  }
+//}
+//
+//class ClientLocalCommonAdaptor[F[_], Request](
+//  proxy: RemoteProxy[F, RemoteOutput.Client[Request]],
+//)(implicit F: Monad[F], FE: MonadError[F, Throwable])
+//  extends LocalAdaptor[F, LocalInput.ClientCommon] {
+//  override def onLocal(input: LocalInput.ClientCommon): F[Unit] = {
+//    input match {
+//      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
+//      case LocalInput.Cancel => proxy.send(RemoteOutput.Cancel)
+//    }
+//  }
+//}
+//
 
-
-class ClientLocalUnaryAdaptor[F[_], Request](
+class ClientLocalAdaptor[F[_], Request](
   proxy: RemoteProxy[F, RemoteOutput.Client[Request]],
 )(implicit F: Monad[F], FE: MonadError[F, Throwable])
   extends LocalAdaptor[F, LocalInput.Client[Request]] {
   override def onLocal(input: LocalInput.Client[Request]): F[Unit] = {
     input match {
       case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
-      case LocalInput.Message(value) => proxy.send(RemoteOutput.Message(value))
+//      case LocalInput.Message(value) => proxy.send(RemoteOutput.Message(value))
       case LocalInput.Cancel => proxy.send(RemoteOutput.Cancel)
     }
   }
@@ -157,32 +170,32 @@ class ClientRemoteUnaryAdaptor[F[_], Request, Response](
 //  - unary doesn't have anything
 //  - depends on StreamOutput
 
-class ServerLocalStreamAdaptor[F[_], Response](
-  proxy: RemoteProxy[F, RemoteOutput.Server[Response]],
-  output: StreamOutputImpl2[F, Response],
-)(implicit F: Monad[F], FE: MonadError[F, Throwable], Async: Async[F])
-  extends LocalAdaptor[F, LocalInput.Server[Response]]
-{
-  override def onLocal(input: LocalInput.Server[Response]): F[Unit] = {
-    input match {
-      case LocalInput.Message(value) => output.sendWhenReady(value)
-      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
-    }
-  }
-}
-
-class ServerLocalUnaryAdaptor[F[_], Response](
-  proxy: RemoteProxy[F, RemoteOutput.Server[Response]],
-)(implicit F: Monad[F], FE: MonadError[F, Throwable], Async: Async[F])
-  extends LocalAdaptor[F, LocalInput.Server[Response]]
-{
-  override def onLocal(input: LocalInput.Server[Response]): F[Unit] = {
-    input match {
-      case LocalInput.Message(value) => proxy.send(RemoteOutput.Message(value))
-      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
-    }
-  }
-}
+//class ServerLocalStreamAdaptor[F[_], Response](
+//  proxy: RemoteProxy[F, RemoteOutput.Server[Response]],
+//  output: StreamOutputImpl2[F, Response],
+//)(implicit F: Monad[F], FE: MonadError[F, Throwable], Async: Async[F])
+//  extends LocalAdaptor[F, LocalInput.Server[Response]]
+//{
+//  override def onLocal(input: LocalInput.Server[Response]): F[Unit] = {
+//    input match {
+//      case LocalInput.Message(value) => output.sendWhenReady(value)
+//      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
+//    }
+//  }
+//}
+//
+//class ServerLocalUnaryAdaptor[F[_], Response](
+//  proxy: RemoteProxy[F, RemoteOutput.Server[Response]],
+//)(implicit F: Monad[F], FE: MonadError[F, Throwable], Async: Async[F])
+//  extends LocalAdaptor[F, LocalInput.Server[Response]]
+//{
+//  override def onLocal(input: LocalInput.Server[Response]): F[Unit] = {
+//    input match {
+//      case LocalInput.Message(value) => proxy.send(RemoteOutput.Message(value))
+//      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
+//    }
+//  }
+//}
 
 
 class ServerRemoteStreamAdaptor[F[_], Request, Response](
