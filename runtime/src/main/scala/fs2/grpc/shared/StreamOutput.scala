@@ -5,7 +5,7 @@ import cats.effect.std.Dispatcher
 import cats.effect.{Async, Deferred, Ref, SyncIO}
 import cats.syntax.all._
 import fs2.Stream
-import fs2.grpc.internal.{ClientRemoteOutput, RemoteOutput, RemoteProxy}
+import fs2.grpc.internal.{RemoteOutput, RemoteProxy}
 import io.grpc.{ClientCall, ServerCall}
 
 private[grpc] trait StreamOutput[F[_], T] {

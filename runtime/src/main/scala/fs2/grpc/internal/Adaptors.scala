@@ -122,7 +122,7 @@ class ClientRemoteStreamAdaptor[F[_], Request, Response](
 
 class ClientLocalAdaptor[F[_], Request](
   proxy: RemoteProxy[F, RemoteOutput.Client[Request]],
-)(implicit F: Monad[F], FE: MonadError[F, Throwable])
+)
   extends LocalAdaptor[F, LocalInput.Client[Request]] {
   override def onLocal(input: LocalInput.Client[Request]): F[Unit] = {
     input match {
@@ -148,18 +148,21 @@ class ClientRemoteUnaryAdaptor[F[_], Request, Response](
         }.flatMap(identity)
 
       case RemoteInput.Close(status, trailers) =>
-        state.modify {
-          case CallState.PendingCloseHandler(h, value) => (CallState.Done(), h(Right(value)))
+        state.get.flatMap {
+          case CallState.PendingCloseHandler(h, value) => {
+            state.set(CallState.Done()).as(h(Right(value)))
+          }
           case CallState.PendingMessage(h) => {
             val errorStatus = if (status.isOk) {
               Status.INTERNAL.withDescription("No message received before close")
             } else {
               status
             }
-            (CallState.Done(), h(Left(errorStatus.asRuntimeException(trailers))))
+            state.set(CallState.Done()).as(h(Left(errorStatus.asRuntimeException(trailers))))
           }
-          case state @ CallState.Done() => (state, F.unit)
-        }.flatMap(identity)
+
+          case CallState.Done() => F.unit
+        }
     }
   }
 }
@@ -201,7 +204,7 @@ class ClientRemoteUnaryAdaptor[F[_], Request, Response](
 class ServerRemoteStreamAdaptor[F[_], Request, Response](
   ingest: StreamIngest[F, Request],
   output: StreamOutputImpl2[F, Response],
-)(implicit F: Monad[F], FE: MonadError[F, Throwable], Async: Async[F])
+)
   extends RemoteAdaptor[F, RemoteInput.Server[Request]]
 {
   override def onRemote(input: RemoteInput.Server[Request]): F[Unit] = {
@@ -216,7 +219,7 @@ class ServerRemoteStreamAdaptor[F[_], Request, Response](
 class ServerRemoteUnaryAdaptor[F[_], Request, Response](
   state: Ref[F, CallState.ServerUnary[F, Request, Response]],
   proxy: RemoteProxy[F, RemoteOutput.Server[Response]],
-)(implicit F: Monad[F], FE: MonadError[F, Throwable], Async: Async[F], Sync: Sync[F])
+)(implicit F: Monad[F], Async: Async[F])
   extends RemoteAdaptor[F, RemoteInput.Server[Request]]
 {
   private def terminate(result: RemoteOutput.Server[Response]): F[Unit] =

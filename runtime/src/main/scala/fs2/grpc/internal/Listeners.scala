@@ -26,7 +26,7 @@ object Listener {
     }
   }
 
-  def serverCall[F[_], Request](adaptor: RemoteAdaptor[F, RemoteInput.Server[Request]], dispatcher: Dispatcher[F]): ClientCall.Listener[Request] = {
+  def serverCall[F[_], Request](adaptor: RemoteAdaptor[F, RemoteInput.Server[Request]], dispatcher: Dispatcher[F]): ServerCall.Listener[Request] = {
     new ServerCall.Listener[Request] {
       private def emit(event: RemoteInput.Server[Request]): Unit = {
         dispatcher.unsafeRunSync(adaptor.onRemote(event))

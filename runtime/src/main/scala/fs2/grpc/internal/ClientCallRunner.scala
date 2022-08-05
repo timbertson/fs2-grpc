@@ -92,8 +92,8 @@ class ClientCallRunner[F[_], Request, Response] (
       _ <- local.onLocal(LocalInput.RequestMore(prefetchN))
     } yield ingest.messages
 
-    // TODO provide reason?
-    Resource.makeCase(acquire)(_ => local.onLocal(LocalInput.Cancel))
+    // TODO provide reason for cancellation?
+    Resource.make(acquire)(_ => local.onLocal(LocalInput.Cancel))
   }
 }
 
