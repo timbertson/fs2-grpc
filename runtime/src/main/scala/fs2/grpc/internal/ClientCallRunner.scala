@@ -5,8 +5,8 @@ import fs2.Stream
 import cats.effect.std.Dispatcher
 import cats.effect.{Async, Ref, Resource, SyncIO}
 import cats.syntax.all._
-import fs2.grpc.client.ClientOptions
-import fs2.grpc.shared.{StreamOutput2, StreamOutputImpl2}
+import fs2.grpc.client.{ClientOptions, StreamIngest}
+import fs2.grpc.shared.{OnReadyListener, StreamOutput2, StreamOutputImpl2}
 import io.grpc._
 
 final case class UnaryResult[A](value: Option[A], status: Option[GrpcStatus])
@@ -57,33 +57,47 @@ class ClientCallRunner[F[_], Request, Response] (
     }
   }
 
-  def unaryToStreamingCall(message: Request, md: Metadata): Stream[F, Response] =
+  def unaryToStreamingCall(message: Request, md: Metadata): Stream[F, Response] = {
+    val local = new ClientLocalUnaryAdaptor[F, Request](proxy)
+    val resource = for {
+      ref <- Resource.eval(Ref[F].of[CallState.ClientStream[F]](CallState.Idle()))
+      ingest <- Resource.eval(StreamIngest[F, Response](n => local.onLocal(LocalInput.RequestMore(n)), options.prefetchN))
+      remote = new ClientRemoteStreamAdaptor(OnReadyListener.noop[F], ingest, ref)
+      _ <- streamListen(md, remote, local)
+    } yield ingest.messages
     Stream
-      .resource(mkStreamListenerR(md, SyncIO.unit))
-      .flatMap(Stream.exec(sendSingleMessage(message)) ++ _.stream.adaptError(ea))
+      .resource(resource)
+      .flatMap { response =>
+        Stream.exec(local.onLocal(LocalInput.Message(message))) ++ response
+      }
+  }
 
-//  def streamingToStreamingCall(messages: Stream[F, Request], md: Metadata): Stream[F, Response] = {
-//    val local = new ClientLocalUnaryAdaptor(proxy)
-//    Ref[F].of[StreamClientState[F]](ClientState.Idle[F]()).flatMap { stateRef =>
-//      // TODO can we compose StreamOutput to share the above ref? Is it even a good idea? One is incoming, one outgoing?
-//      StreamOutput2[F, Request](proxy).flatMap { streamOutput =>
-//        val remote = new ClientRemoteUnaryAdaptor(stateRef)
-//        val listener = Listener.clientCall(remote, dispatcher)
-//        call.start(listener, headers)
-//        local.onLocal(CommonLocalInput.RequestMore(1)) *>
-//          local.onLocal(CommonLocalInput.Message(message)) *>
-//          local.onLocal(CommonLocalInput.HalfClose) *>
-//          F.pure(local.onLocal(CommonLocalInput.Cancel))
-//      }
-//    }
+  def streamingToStreamingCall(messages: Stream[F, Request], md: Metadata): Stream[F, Response] = {
+    val local = new ClientLocalUnaryAdaptor[F, Request](proxy)
+
+    val resource = for {
+      // TODO can we compose StreamOutput to share the above ref? Is it even a good idea? One is incoming, one outgoing?
+      ref <- Resource.eval(Ref[F].of[CallState.ClientStream[F]](CallState.Idle()))
+      output <- Resource.eval(StreamOutput2[F, Request](proxy))
+      ingest <- Resource.eval(StreamIngest[F, Response](n => local.onLocal(LocalInput.RequestMore(n)), options.prefetchN))
+      remote = new ClientRemoteStreamAdaptor(OnReadyListener.noop[F], ingest, ref)
+      _ <- streamListen(md, remote, local)
+    } yield (output, ingest.messages)
+
+    Stream
+      .resource(resource)
+      .flatMap { case (output, response) =>
+        response.concurrently(messages.evalMap(output.sendWhenReady) ++ Stream.eval(local.onLocal(LocalInput.HalfClose))
+      }
+  }
 
   //
 
-  private def mkStreamListenerR(
+  private def streamListen(
     md: Metadata,
     remote: RemoteAdaptor[F, RemoteInput.Client[Response]],
     local: LocalAdaptor[F, LocalInput.Client[Request]]
-  ): Resource[F, ClientCall.Listener[Response]] = {
+  ): Resource[F, Unit] = {
     val prefetchN = options.prefetchN.max(1)
     val listener = Listener.clientCall[F, Response](remote, dispatcher)
     val acquire = F.delay(call.start(listener, md)) <* local.onLocal(LocalInput.RequestMore(prefetchN))

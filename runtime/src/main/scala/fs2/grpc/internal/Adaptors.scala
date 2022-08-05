@@ -5,7 +5,7 @@ import cats.effect.{Async, Sync}
 import cats.syntax.all._
 import cats.{Monad, MonadError}
 import fs2.grpc.client.StreamIngest
-import fs2.grpc.shared.StreamOutputImpl2
+import fs2.grpc.shared.{OnReadyListener, StreamOutputImpl2}
 import io.grpc.{ClientCall, ServerCall, Status}
 
 
@@ -65,13 +65,13 @@ object Adaptor {
 }
 
 class ClientRemoteStreamAdaptor[F[_], Request, Response](
-  output: StreamOutputImpl2[F, Response],
+  onReadyListener: OnReadyListener[F],
   ingest: StreamIngest[F, Response],
   state: Ref[F, CallState.ClientStream[F]],
 )(implicit F: Async[F]) extends RemoteAdaptor[F, RemoteInput.Client[Response]] {
   override def onRemote(input: RemoteInput.Client[Response]): F[Unit] = {
     input match {
-      case RemoteInput.Ready => output.onReady
+      case RemoteInput.Ready => onReadyListener.onReady
       case RemoteInput.Message(value) => ingest.onMessage(value)
       case RemoteInput.Close(status, trailers) =>
         (if (status.isOk) {
@@ -113,6 +113,7 @@ class ClientLocalUnaryAdaptor[F[_], Request](
   extends LocalAdaptor[F, LocalInput.Client[Request]] {
   override def onLocal(input: LocalInput.Client[Request]): F[Unit] = {
     input match {
+      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
       case LocalInput.Message(value) => proxy.send(RemoteOutput.Message(value))
       case LocalInput.Cancel => proxy.send(RemoteOutput.Cancel)
     }

@@ -1,5 +1,6 @@
 package fs2.grpc.shared
 
+import cats.{Applicative, Monad}
 import cats.effect.std.Dispatcher
 import cats.effect.{Async, Deferred, Ref, SyncIO}
 import cats.syntax.all._
@@ -65,10 +66,20 @@ private[grpc] class StreamOutputImpl[F[_], T](
   }
 }
 
+private[grpc] trait OnReadyListener[F[_]] {
+  def onReady: F[Unit]
+}
+object OnReadyListener {
+  def noop[F[_]](implicit F: Monad[F]): OnReadyListener[F] = new OnReadyListener[F] {
+    override def onReady: F[Unit] = F.unit
+  }
+}
+
+
 private[grpc] class StreamOutputImpl2[F[_], T](
   proxy: RemoteProxy[F, RemoteOutput.Message[T]],
   waiting: Ref[F, Option[Deferred[F, Unit]]],
-)(implicit F: Async[F]) {
+)(implicit F: Async[F]) extends OnReadyListener[F] {
   def onReady: F[Unit] = waiting.getAndSet(None).flatMap {
     case None => F.unit
     case Some(wake) => wake.complete(()).void
