@@ -1,10 +1,11 @@
 package fs2.grpc.internal
 
 import cats.effect.kernel.Ref
-import cats.effect.{Async, Sync}
+import cats.effect.{Async, GenSpawn, Spawn, Sync}
 import cats.syntax.all._
 import cats.{Monad, MonadError}
 import fs2.grpc.client.StreamIngest
+import fs2.grpc.server.ServerCallOptions
 import fs2.grpc.shared.{OnReadyListener, StreamOutputImpl2}
 import io.grpc.{ClientCall, ServerCall, Status}
 
@@ -14,10 +15,10 @@ trait RemoteAdaptor[F[_], R] {
 }
 
 
-// TODO I think a local adaptor is the same as proxy, unify them?
-trait LocalAdaptor[F[_], LI] {
-  def onLocal(input: LI): F[Unit]
-}
+//// TODO I think a local adaptor is the same as proxy, unify them?
+//trait LocalAdaptor[F[_], LI] {
+//  def onLocal(input: LI): F[Unit]
+//}
 
 //trait CallAdaptor[F[_], LI, RI] {
 //  def onRemote(input: RI): F[Unit]
@@ -29,6 +30,8 @@ trait RemoteProxy[F[_], -RO] {
   def isReady: F[Boolean]
 }
 
+// TODO: remote proxy could implement composite actions like "sendDingleRequest",
+// sending headers etc.
 object RemoteProxy {
   def client[F[_], Request, Response](
     call: ClientCall[Request, Response]
@@ -45,16 +48,20 @@ object RemoteProxy {
   }
 
   def server[F[_], Request, Response](
+    options: ServerCallOptions,
     call: ServerCall[Request, Response]
-  )(implicit F: Sync[F]): RemoteProxy[F, RemoteOutput.Server[Response]]
-  = new RemoteProxy[F, RemoteOutput.Server[Response]] {
-    override def send(output: RemoteOutput.Server[Response]): F[Unit] = F.delay(output match {
-      case RemoteOutput.Message(value) => call.sendMessage(value)
-      case RemoteOutput.RequestMore(n) => call.request(n)
-      case RemoteOutput.Error(status) => call.close(status, null)
-    })
+  )(implicit F: Sync[F]): F[RemoteProxy[F, RemoteOutput.Server[Response]]] = F.delay {
+    call.setMessageCompression(options.messageCompression)
+    options.compressor.map(_.name).foreach(call.setCompression)
+    new RemoteProxy[F, RemoteOutput.Server[Response]] {
+      override def send(output: RemoteOutput.Server[Response]): F[Unit] = F.delay(output match {
+        case RemoteOutput.Message(value) => call.sendMessage(value)
+        case RemoteOutput.RequestMore(n) => call.request(n)
+        case RemoteOutput.Close(status, trailers) => call.close(status, trailers.orNull)
+      })
 
-    override def isReady: F[Boolean] = F.delay(call.isReady)
+      override def isReady: F[Boolean] = F.delay(call.isReady)
+    }
   }
 }
 
@@ -120,18 +127,18 @@ class ClientRemoteStreamAdaptor[F[_], Request, Response](
 //}
 //
 
-class ClientLocalAdaptor[F[_], Request](
-  proxy: RemoteProxy[F, RemoteOutput.Client[Request]],
-)
-  extends LocalAdaptor[F, LocalInput.Client[Request]] {
-  override def onLocal(input: LocalInput.Client[Request]): F[Unit] = {
-    input match {
-      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
-//      case LocalInput.Message(value) => proxy.send(RemoteOutput.Message(value))
-      case LocalInput.Cancel => proxy.send(RemoteOutput.Cancel)
-    }
-  }
-}
+//class ClientLocalAdaptor[F[_], Request](
+//  proxy: RemoteProxy[F, RemoteOutput.Client[Request]],
+//)
+//  extends LocalAdaptor[F, LocalInput.Client[Request]] {
+//  override def onLocal(input: LocalInput.Client[Request]): F[Unit] = {
+//    input match {
+//      case LocalInput.RequestMore(n) => proxy.send(RemoteOutput.RequestMore(n))
+////      case LocalInput.Message(value) => proxy.send(RemoteOutput.Message(value))
+//      case LocalInput.Cancel => proxy.send(RemoteOutput.Cancel)
+//    }
+//  }
+//}
 
 class ClientRemoteUnaryAdaptor[F[_], Request, Response](
   state: Ref[F, CallState.ClientUnary[F, Response]],
@@ -219,7 +226,7 @@ class ServerRemoteStreamAdaptor[F[_], Request, Response](
 class ServerRemoteUnaryAdaptor[F[_], Request, Response](
   state: Ref[F, CallState.ServerUnary[F, Request, Response]],
   proxy: RemoteProxy[F, RemoteOutput.Server[Response]],
-)(implicit F: Monad[F], Async: Async[F])
+)(implicit F: Monad[F], Async: Async[F], Spawn: Spawn[F])
   extends RemoteAdaptor[F, RemoteInput.Server[Request]]
 {
   private def terminate(result: RemoteOutput.Server[Response]): F[Unit] =
@@ -227,16 +234,33 @@ class ServerRemoteUnaryAdaptor[F[_], Request, Response](
 
   override def onRemote(input: RemoteInput.Server[Request]): F[Unit] = {
     input match {
-      case RemoteInput.Cancel => state.modify {
-        case CallState.Called(cancel) => (CallState.Done(), cancel.to[F])
-      }.flatMap(identity)
 
       case RemoteInput.Message(request) => state.get.flatMap {
         case CallState.PendingMessageServer(handler) => state.set(CallState.PendingHalfClose(handler, request))
-        case CallState.PendingHalfClose(_, _) => terminate(RemoteOutput.Error(
+        case CallState.PendingHalfClose(_, _) => terminate(RemoteOutput.Close(
           Status.INTERNAL.withDescription("Too many requests")
         ))
-        case _ => F.unit
+      }
+
+      case RemoteInput.Cancel => state.modify {
+        case CallState.Called(running) => (CallState.Done(), running.cancel)
+        case _ => (CallState.Done(), F.unit)
+      }.flatMap(identity)
+
+      case RemoteInput.HalfClose => state.get.flatMap {
+        case CallState.PendingMessageServer(handler) => terminate(RemoteOutput.Close(
+            Status.INTERNAL.withDescription("Too few requests")))
+
+        case CallState.PendingHalfClose(handler, value) =>
+          handler(value).flatMap { running =>
+            state.modify {
+
+              // call was cancelled before updating state:
+              case done @ CallState.Done() => (done, running.cancel)
+
+              case _ => (CallState.Called(running), F.unit)
+            }.flatMap(identity)
+          }
       }
     }
   }

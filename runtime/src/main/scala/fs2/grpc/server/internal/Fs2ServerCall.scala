@@ -90,9 +90,10 @@ private[server] final class Fs2ServerCall[Request, Response](
     }
   }
 
-  private def handleError(t: Throwable): SyncIO[Unit] = t match {
+  private def handleError(t: Throwable): SyncIO[Unit] = SyncIO.unit /* t match {
     case ex: StatusException => close(ex.getStatus, Option(ex.getTrailers).getOrElse(new Metadata()))
     case ex: StatusRuntimeException => close(ex.getStatus, Option(ex.getTrailers).getOrElse(new Metadata()))
     case ex => close(Status.INTERNAL.withDescription(ex.getMessage).withCause(ex), new Metadata())
   }
+  */
 }

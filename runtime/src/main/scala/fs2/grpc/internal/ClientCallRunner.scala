@@ -42,21 +42,18 @@ class ClientCallRunner[F[_], Request, Response] (
   }
 
   def unaryToStreamingCall(message: Request, md: Metadata): Stream[F, Response] = {
-    val local = new ClientLocalAdaptor[F, Request](proxy)
     Stream
-      .resource(anyToStreamResponse(md, local, OnReadyListener.noop[F]))
+      .resource(anyToStreamResponse(md, OnReadyListener.noop[F]))
       .flatMap { response =>
         Stream.exec(proxy.send(RemoteOutput.Message(message))) ++ response
       }
   }
 
   def streamingToStreamingCall(messages: Stream[F, Request], md: Metadata): Stream[F, Response] = {
-    val local = new ClientLocalAdaptor[F, Request](proxy)
-
     val resource = for {
       output <- Resource.eval(StreamOutput2[F, Request](proxy))
       sendAll = messages.evalMap(output.sendWhenReady) ++ Stream.eval(proxy.send(RemoteOutput.HalfClose))
-      response <- anyToStreamResponse(md, local, output)
+      response <- anyToStreamResponse(md, output)
     } yield response.concurrently(sendAll)
 
     Stream
@@ -71,29 +68,27 @@ class ClientCallRunner[F[_], Request, Response] (
       Ref[F].of[CallState.ClientUnary[F, Response]](CallState.PendingMessage(cb)).flatMap { ref =>
         val remote = new ClientRemoteUnaryAdaptor(ref)
         val listener = Listener.clientCall(remote, dispatcher)
-        call.start(listener, headers)
-        spawn.map(Some.apply)
+        F.delay(call.start(listener, headers)) *> spawn.map(Some.apply)
       }
     }
   }
 
   private def anyToStreamResponse[Listener<:OnReadyListener[F]](
     md: Metadata,
-    local: LocalAdaptor[F, LocalInput.Client[Request]],
     onReadyListener: OnReadyListener[F],
   ): Resource[F, Stream[F, Response]] = {
     val prefetchN = options.prefetchN.max(1)
     val acquire = for {
       ref <- Ref[F].of[CallState.ClientStream[F]](CallState.Idle())
-      ingest <- StreamIngest[F, Response](n => local.onLocal(LocalInput.RequestMore(n)), options.prefetchN)
+      ingest <- StreamIngest[F, Response](n => proxy.send(RemoteOutput.RequestMore(n)), options.prefetchN)
       remote = new ClientRemoteStreamAdaptor(onReadyListener, ingest, ref)
       listener = Listener.clientCall[F, Response](remote, dispatcher)
       _ <- F.delay(call.start(listener, md))
-      _ <- local.onLocal(LocalInput.RequestMore(prefetchN))
+      _ <- proxy.send(RemoteOutput.RequestMore(prefetchN))
     } yield ingest.messages
 
     // TODO provide reason for cancellation?
-    Resource.make(acquire)(_ => local.onLocal(LocalInput.Cancel))
+    Resource.make(acquire)(_ => proxy.send(RemoteOutput.Cancel))
   }
 }
 

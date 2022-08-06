@@ -68,6 +68,23 @@ class ServerSuite extends Fs2GrpcSuite {
     assertEquals(dummy.messages.length, 0)
   }
 
+  runTest("error in unaryToUnary") { (tc, d) =>
+    val dummy = new DummyServerCall
+    val error = new RuntimeException("server error")
+    val handler = Fs2UnaryServerCallHandler.unary[IO, String, Int]((req, _) => IO.raiseError(error), ServerOptions.default, d)
+    val listener = handler.startCall(dummy, new Metadata())
+
+    listener.onMessage("123")
+    listener.onHalfClose()
+    tc.tick()
+
+    assertEquals(dummy.messages.size, 0)
+    assertEquals(dummy.currentStatus.isDefined, true)
+    assertEquals(dummy.currentStatus.get.getCode, Status.INTERNAL.getCode)
+    assertEquals(dummy.currentStatus.get.getDescription, error.getMessage)
+    assertEquals(dummy.currentStatus.get.getCause, error)
+  }
+
   runTest("cancellation on the fly for unaryToUnary") { (tc, d) =>
     val dummy = new DummyServerCall
     val handler = Fs2UnaryServerCallHandler.unary[IO, String, Int](
